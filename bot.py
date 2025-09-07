@@ -1,26 +1,17 @@
 import os
+import json
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
-import json
-
-DATA_FILE = "botdata.json"
-
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    return {"cooldowns": {}, "settings": {}}
-
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+from storage import load_data, save_data
 
 data = load_data()
 
 intents = discord.Intents.default()
 intents.messages = True
 intents.guilds = True
+intents.message_content = True  # ✅ Fix warning
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 

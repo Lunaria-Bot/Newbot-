@@ -1,13 +1,10 @@
 import os
 import discord
-from discord.ext import commands
 from discord import app_commands
-
+from discord.ext import commands
 from utils.storage import load_data, save_data
-from commands import settings, reload_cmd
 
-DATA_FILE = "data/botdata.json"
-data = load_data(DATA_FILE)
+data = load_data()
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -24,9 +21,26 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Failed to sync commands: {e}")
 
-# Register commands
-bot.tree.add_command(settings.settings)
-bot.tree.add_command(reload_cmd.reload)
+@bot.tree.command(name="settings", description="Update your DM preferences")
+@app_commands.describe(dm_enabled="Enable or disable DM notifications (true/false)")
+async def settings(interaction: discord.Interaction, dm_enabled: bool):
+    user_id = str(interaction.user.id)
+    if "settings" not in data:
+        data["settings"] = {}
+    data["settings"][user_id] = {"dm_enabled": dm_enabled}
+    save_data(data)
+    await interaction.response.send_message(f"✅ DM notifications {'enabled' if dm_enabled else 'disabled'}")
+
+@bot.tree.command(name="reload", description="Reloads the bot's commands (Admin only)")
+async def reload(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+        return
+    try:
+        await bot.tree.sync()
+        await interaction.response.send_message("✅ Commands reloaded successfully.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Reload failed: {e}", ephemeral=True)
 
 if __name__ == "__main__":
     token = os.getenv("DISCORD_BOT_TOKEN")

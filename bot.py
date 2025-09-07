@@ -1,10 +1,17 @@
 import os
+import sys
+import json
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+# Ensure local imports work on Railway
+sys.path.append(os.path.dirname(__file__))
+
 from utils.storage import load_data, save_data
 
-data = load_data()
+DATA_FILE = "data/botdata.json"
+data = load_data(DATA_FILE)
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -28,7 +35,7 @@ async def settings(interaction: discord.Interaction, dm_enabled: bool):
     if "settings" not in data:
         data["settings"] = {}
     data["settings"][user_id] = {"dm_enabled": dm_enabled}
-    save_data(data)
+    save_data(DATA_FILE, data)
     await interaction.response.send_message(f"✅ DM notifications {'enabled' if dm_enabled else 'disabled'}")
 
 @bot.tree.command(name="reload", description="Reloads the bot's commands (Admin only)")

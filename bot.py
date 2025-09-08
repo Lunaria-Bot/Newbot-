@@ -1,4 +1,3 @@
-# bot.py
 import os
 import json
 import time
@@ -7,35 +6,27 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-DATA_FILE = "botdata.json"
-MAZOKU_BOT_ID = 1242388858897956906  # Replace if different
+DATA_FILE = "data/botdata.json"
+MAZOKU_BOT_ID = 1242388858897956906  # Mazoku bot ID
 
-# Default cooldowns (seconds)
-DEFAULT_COOLDOWNS = {
-    "Refreshing Box": 60,
-    "summer": 1800,
-    "summon": 1800,
-    "Premium Pack": 60,
-}
-
-# ---------------------------
+# --------------------------
 # Persistence Helpers
-# ---------------------------
+# --------------------------
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
             return json.load(f)
-    return {"cooldowns": {}, "settings": {}}
+    return {"cooldowns": {}, "settings": {}, "alerts_role": None}
 
-def save_data(data):
+def save_data():
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
 data = load_data()
 
-# ---------------------------
-# Bot Setup
-# ---------------------------
+# --------------------------
+# Discord Setup
+# --------------------------
 intents = discord.Intents.default()
 intents.messages = True
 intents.guilds = True
@@ -43,38 +34,73 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# In-memory cooldowns: (user_id, command) -> end_timestamp
-cooldowns = {}
+# Cooldown defaults
+COOLDOWN_SECONDS = {
+    "Refreshing Box": 60,
+    "summon": 1800,
+    "Premium pack": 60,
+    "summer": 1800,
+}
 
-# ---------------------------
+ALIASES = {
+    "open-boxes": "Refreshing Box",
+    "summon": "summon",
+    "premium-pack": "Premium pack",
+    "summer": "summer",
+}
+
+# --------------------------
 # Utility
-# ---------------------------
+# --------------------------
 def get_interaction_from_message(message: discord.Message):
-    inter = getattr(message, "interaction_metadata", None)
-    if not inter:
-        inter = getattr(message, "interaction", None)  # fallback
-    return inter
+    return getattr(message, "interaction_metadata", None)
 
-def user_dm_enabled(user_id: int) -> bool:
-    return data.get("settings", {}).get(str(user_id), {}).get("dm_enabled", True)
+async def notify_user(user: discord.User, message: str, channel: discord.TextChannel):
+    user_id = str(user.id)
+    settings = data.get("settings", {}).get(user_id, {"dm_enabled": True})
 
-# ---------------------------
+    if settings.get("dm_enabled", True):
+        try:
+            await user.send(message)
+            return
+        except discord.Forbidden:
+            pass
+    await channel.send(f"{user.mention} {message}")
+
+# --------------------------
 # Events
-# ---------------------------
+# --------------------------
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user} ({bot.user.id})")
     try:
         synced = await bot.tree.sync()
-        print(f"📜 Synced {len(synced)} slash commands.")
+        print(f"📜 Synced {len(synced)} commands.")
     except Exception as e:
-        print(f"❌ Failed to sync commands: {e}")
+        print(f"❌ Failed to sync: {e}")
+    print(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.id == bot.user.id:
         return
 
+    # Debug
+    print(f"[DEBUG] {message.author}: {message.content}")
+
+    # High tier summon detector
+    if "High Tier Summon" in message.content:
+        role_id = data.get("alerts_role")
+        if role_id:
+            for member in message.guild.members:
+                if role_id in [r.id for r in member.roles]:
+                    try:
+                        await member.send(
+                            f"🌟 High Tier Summon detected!\nLink: {message.jump_url}"
+                        )
+                    except Exception:
+                        pass
+
+    # Only track Mazoku bot
     if message.author.bot and message.author.id == MAZOKU_BOT_ID:
         inter = get_interaction_from_message(message)
         if not inter:
@@ -85,107 +111,78 @@ async def on_message(message: discord.Message):
         if not cmd_name or not user:
             return
 
-        # Check if this is a tracked command
-        if cmd_name not in DEFAULT_COOLDOWNS:
+        canonical = ALIASES.get(cmd_name, cmd_name)
+        if canonical not in COOLDOWN_SECONDS:
             return
 
-        # Skip cooldowns based on message content
-        if cmd_name == "Premium Pack" and "No premium packs available to open." in message.content:
-            return
-        if cmd_name == "summon" and "You can summon again in" in message.content:
+        # Skip cooldown if response says no available items
+        if (
+            "No premium packs available to open." in message.content
+            or "You can summon again in" in message.content
+        ):
             return
 
         now = time.time()
-        key = (user.id, cmd_name)
-        end = cooldowns.get(key, 0)
+        key = f"{user.id}:{canonical}"
+        end = data["cooldowns"].get(key, 0)
 
         if end > now:
             remaining = int(end - now)
-            try:
-                await message.channel.send(
-                    f"⏳ {user.mention}, you're still on cooldown for {cmd_name} ({remaining}s left)."
-                )
-            except Exception:
-                pass
+            await notify_user(user, f"⏳ Cooldown for {canonical}: {remaining}s left.", message.channel)
             return
 
-        # Start cooldown
-        cd = DEFAULT_COOLDOWNS[cmd_name]
-        cooldowns[key] = now + cd
-        save_data(data)
+        cd = COOLDOWN_SECONDS[canonical]
+        data["cooldowns"][key] = now + cd
+        save_data()
 
-        # Try sending DM
-        if user_dm_enabled(user.id):
-            try:
-                await user.send(
-                    f"⚡ Cooldown started for {cmd_name} — I'll remind you in {cd} seconds."
-                )
-            except discord.Forbidden:
-                await message.channel.send(
-                    f"⚡ {user.mention}, cooldown started for {cmd_name} — I'll remind you in {cd} seconds. (DMs blocked)"
-                )
-        else:
-            await message.channel.send(
-                f"⚡ {user.mention}, cooldown started for {cmd_name} — I'll remind you in {cd} seconds."
-            )
+        await notify_user(user, f"⚡ Cooldown started for {canonical} ({cd} seconds).", message.channel)
 
-        # Sleep and notify when cooldown ends
-        await asyncio.sleep(cd)
-        if cooldowns.get(key, 0) <= time.time():
-            cooldowns.pop(key, None)
-            try:
-                if user_dm_enabled(user.id):
-                    await user.send(f"✅ Your cooldown for {cmd_name} is over — you can use it again.")
-                else:
-                    await message.channel.send(f"✅ {user.mention}, cooldown for {cmd_name} is over!")
-            except Exception:
-                pass
+        async def clear_cd():
+            await asyncio.sleep(cd)
+            if data["cooldowns"].get(key, 0) <= time.time():
+                data["cooldowns"].pop(key, None)
+                save_data()
+                await notify_user(user, f"✅ Cooldown for {canonical} is over!", message.channel)
 
-# ---------------------------
+        asyncio.create_task(clear_cd())
+
+# --------------------------
 # Slash Commands
-# ---------------------------
+# --------------------------
 @bot.tree.command(name="settings", description="Enable or disable DM notifications")
-@app_commands.describe(dm_enabled="True = enable DMs, False = disable DMs")
+@app_commands.describe(dm_enabled="True = DM enabled, False = DM disabled")
 async def settings(interaction: discord.Interaction, dm_enabled: bool):
     user_id = str(interaction.user.id)
-    data.setdefault("settings", {})[user_id] = {"dm_enabled": dm_enabled}
-    save_data(data)
+    data["settings"][user_id] = {"dm_enabled": dm_enabled}
+    save_data()
     await interaction.response.send_message(
-        f"✅ DM notifications {'enabled' if dm_enabled else 'disabled'}",
-        ephemeral=True
+        f"✅ DM notifications {'enabled' if dm_enabled else 'disabled'}.", ephemeral=True
     )
 
-@bot.tree.command(name="reload", description="Reload slash commands (Admin only)")
+@bot.tree.command(name="reload", description="Reload bot commands (Admin only)")
 async def reload(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You don’t have permission.", ephemeral=True)
+        await interaction.response.send_message("❌ Admin only.", ephemeral=True)
         return
     try:
-        if interaction.guild:
-            await bot.tree.sync(guild=interaction.guild)
-        else:
-            await bot.tree.sync()
-        await interaction.response.send_message("✅ Commands reloaded successfully.", ephemeral=True)
+        await bot.tree.sync()
+        await interaction.response.send_message("✅ Commands reloaded.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"❌ Reload failed: {e}", ephemeral=True)
 
-@bot.tree.command(name="checkcooldowns", description="Check your active cooldowns")
-async def checkcooldowns(interaction: discord.Interaction):
-    now = time.time()
-    user_id = interaction.user.id
-    active = []
-    for (uid, cmd), end_time in cooldowns.items():
-        if uid == user_id and end_time > now:
-            active.append(f"{cmd}: {int(end_time - now)}s left")
+@bot.tree.command(name="setrole", description="Set role for High Tier Summon alerts (Admin only)")
+@app_commands.describe(role="The role to notify")
+async def setrole(interaction: discord.Interaction, role: discord.Role):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        return
+    data["alerts_role"] = role.id
+    save_data()
+    await interaction.response.send_message(f"✅ High Tier Summon alerts will notify {role.mention}", ephemeral=True)
 
-    if not active:
-        await interaction.response.send_message("✅ You have no active cooldowns.", ephemeral=True)
-    else:
-        await interaction.response.send_message("⏳ Active cooldowns:\n" + "\n".join(active), ephemeral=True)
-
-# ---------------------------
+# --------------------------
 # Run
-# ---------------------------
+# --------------------------
 if __name__ == "__main__":
     token = os.getenv("DISCORD_BOT_TOKEN")
     if not token:
